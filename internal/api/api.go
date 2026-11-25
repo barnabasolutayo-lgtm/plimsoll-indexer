@@ -477,8 +477,9 @@ func (s *Server) authorizeWebhookAdmin(w http.ResponseWriter, r *http.Request) b
 // strings through to storage.
 func parseSAC(w http.ResponseWriter, r *http.Request) (string, bool) {
 	sac := r.PathValue("sac")
-	if !strkey.IsValidContractAddress(sac) {
-		writeError(w, http.StatusBadRequest, "sac must be a contract strkey")
+	raw, err := strkey.Decode(strkey.VersionByteContract, sac)
+	if err != nil || len(raw) != 32 {
+		writeError(w, http.StatusBadRequest, "sac must be a 32-byte contract strkey")
 		return "", false
 	}
 	return sac, true
