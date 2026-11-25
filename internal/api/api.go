@@ -52,6 +52,7 @@ type NetworkInfo struct {
 type Server struct {
 	Store             Reader
 	WebhookStore      WebhookManager
+	WebhookRetryer    WebhookRetryer
 	WebhookAdminToken string
 	WebhookCodec      *webhook.SecretCodec
 	Network           NetworkInfo
@@ -63,7 +64,13 @@ type Server struct {
 type WebhookManager interface {
 	CreateWebhook(context.Context, string, string, []byte) (store.Webhook, error)
 	ListWebhooks(context.Context) ([]store.Webhook, error)
+	GetWebhook(context.Context, int64) (store.Webhook, bool, error)
 	DeleteWebhook(context.Context, int64) (bool, error)
+	ListWebhookDLQ(context.Context, int64, int) ([]store.WebhookDLQ, error)
+}
+
+type WebhookRetryer interface {
+	RetryWebhookDLQ(context.Context, int64, int64) (bool, error)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -79,6 +86,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/breakdowns/{hash}", s.breakdown)
 	mux.HandleFunc("POST /v1/webhooks", s.createWebhook)
 	mux.HandleFunc("GET /v1/webhooks", s.listWebhooks)
+	mux.HandleFunc("GET /v1/webhooks/{id}/dlq", s.listWebhookDLQ)
+	mux.HandleFunc("POST /v1/webhooks/{id}/dlq/{delivery_id}/retry", s.retryWebhookDLQ)
 	mux.HandleFunc("DELETE /v1/webhooks/{id}", s.deleteWebhook)
 	return s.cors(mux)
 }
@@ -134,6 +143,14 @@ type webhookJSON struct {
 type createdWebhookJSON struct {
 	webhookJSON
 	Secret string `json:"secret"`
+}
+
+type webhookDLQJSON struct {
+	ID        int64           `json:"id"`
+	Payload   json.RawMessage `json:"payload"`
+	LastError string          `json:"last_error"`
+	Attempts  int             `json:"attempts"`
+	FailedAt  time.Time       `json:"failed_at"`
 }
 
 func toSupply(sp *coverage.Supply) *supplyJSON {
@@ -450,6 +467,73 @@ func (s *Server) deleteWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) listWebhookDLQ(w http.ResponseWriter, r *http.Request) {
+	if !s.webhookConfigured(w) || !s.authorizeWebhookAdmin(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, http.StatusBadRequest, "webhook id must be a positive integer")
+		return
+	}
+	limit, ok := parseLimit(w, r)
+	if !ok {
+		return
+	}
+	_, found, err := s.WebhookStore.GetWebhook(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "webhook not found")
+		return
+	}
+	items, err := s.WebhookStore.ListWebhookDLQ(r.Context(), id, limit)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	out := make([]webhookDLQJSON, 0, len(items))
+	for _, item := range items {
+		out = append(out, webhookDLQJSON{
+			ID: item.ID, Payload: json.RawMessage(item.Payload), LastError: item.LastError,
+			Attempts: item.Attempts, FailedAt: item.FailedAt.UTC(),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deliveries": out})
+}
+
+func (s *Server) retryWebhookDLQ(w http.ResponseWriter, r *http.Request) {
+	if !s.webhookConfigured(w) || !s.authorizeWebhookAdmin(w, r) {
+		return
+	}
+	webhookID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || webhookID < 1 {
+		writeError(w, http.StatusBadRequest, "webhook id must be a positive integer")
+		return
+	}
+	deliveryID, err := strconv.ParseInt(r.PathValue("delivery_id"), 10, 64)
+	if err != nil || deliveryID < 1 {
+		writeError(w, http.StatusBadRequest, "delivery id must be a positive integer")
+		return
+	}
+	if s.WebhookRetryer == nil {
+		writeError(w, http.StatusServiceUnavailable, "webhook retry is not configured")
+		return
+	}
+	found, err := s.WebhookRetryer.RetryWebhookDLQ(r.Context(), webhookID, deliveryID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "webhook DLQ entry not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "delivered"})
 }
 
 func (s *Server) webhookConfigured(w http.ResponseWriter) bool {

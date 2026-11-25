@@ -67,6 +67,7 @@ The command fetches the asset's snapshot breakdown from the indexer, verifies th
 | `GET /v1/reporters` | Active registered reporters |
 | `GET /v1/breakdowns/{hash}` | Exact bytes of a supply breakdown |
 | `POST /v1/webhooks`, `GET /v1/webhooks`, `DELETE /v1/webhooks/{id}` | Manage authenticated issuer TOML change subscriptions |
+| `GET /v1/webhooks/{id}/dlq`, `POST /v1/webhooks/{id}/dlq/{delivery_id}/retry` | Inspect and retry failed webhook deliveries |
 
 Webhook registration and signature verification are covered in the
 [webhook guide](docs/webhooks.md).

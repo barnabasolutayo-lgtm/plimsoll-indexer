@@ -116,7 +116,7 @@ Logs are JSON (`log/slog`). Key messages:
 | info | `supply posting disabled (SUPPLY_POSTER_SECRET not set)` | Expected on read-only instances. |
 | info | `supply cross-check disabled (HORIZON_CHECK_URL not set)` | The poster signs on one Horizon's word. |
 | info | `issuer stellar.toml changed` | The issuer document hash changed; includes `old_hash` and `new_hash`. |
-| error | `issuer stellar.toml change webhook delivery failed` | A destination could not receive the TOML change event. |
+| error | `issuer stellar.toml change webhook delivery failed` | Delivery exhausted its retries and was saved to the DLQ. Inspect `GET /v1/webhooks/{id}/dlq` and retry with `POST /v1/webhooks/{id}/dlq/{delivery_id}/retry`. |
 
 ## Common procedures
 

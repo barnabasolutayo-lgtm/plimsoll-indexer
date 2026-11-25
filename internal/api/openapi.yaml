@@ -332,6 +332,79 @@ paths:
           description: Missing or invalid administrator token
         '404':
           description: Webhook not found
+  /v1/webhooks/{id}/dlq:
+    get:
+      summary: List failed deliveries for a webhook
+      operationId: listWebhookDeadLetters
+      security:
+        - WebhookAdminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of deliveries to return (1-1000)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+      responses:
+        '200':
+          description: Failed webhook deliveries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deliveries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookDLQ'
+                required: [deliveries]
+        '400':
+          description: Invalid webhook ID or limit
+        '401':
+          description: Missing or invalid administrator token
+        '404':
+          description: Webhook not found
+  /v1/webhooks/{id}/dlq/{delivery_id}/retry:
+    post:
+      summary: Retry a failed webhook delivery
+      operationId: retryWebhookDeadLetter
+      security:
+        - WebhookAdminAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: delivery_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Delivery succeeded and the DLQ entry was removed
+        '400':
+          description: Invalid webhook or delivery ID
+        '401':
+          description: Missing or invalid administrator token
+        '404':
+          description: Webhook DLQ entry not found
+        '500':
+          description: Delivery retry failed
+        '503':
+          description: Webhook retry is not configured
   /v1/breakdowns/{hash}:
     get:
       summary: Get raw supply breakdown by hash
@@ -600,6 +673,23 @@ components:
               type: string
               description: Returned once; store it securely.
           required: [secret]
+    WebhookDLQ:
+      type: object
+      properties:
+        id:
+          type: integer
+        payload:
+          type: object
+          description: Original JSON payload sent to the webhook
+        last_error:
+          type: string
+        attempts:
+          type: integer
+          description: Total delivery attempts, including retries
+        failed_at:
+          type: string
+          format: date-time
+      required: [id, payload, last_error, attempts, failed_at]
     ErrorResponse:
       type: object
       properties:

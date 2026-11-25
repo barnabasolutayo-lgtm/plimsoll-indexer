@@ -33,6 +33,15 @@ type Webhook struct {
 	CreatedAt        time.Time
 }
 
+type WebhookDLQ struct {
+	ID        int64
+	WebhookID int64
+	Payload   []byte
+	LastError string
+	Attempts  int
+	FailedAt  time.Time
+}
+
 // Open connects to the database and brings its schema up to date by applying
 // any pending migrations (see migrate.go).
 func Open(ctx context.Context, url string) (*Store, error) {
@@ -417,10 +426,92 @@ func (s *Store) ListWebhooks(ctx context.Context) ([]Webhook, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) GetWebhook(ctx context.Context, id int64) (Webhook, bool, error) {
+	var w Webhook
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, url, secret_hash, secret_ciphertext, created_at
+		FROM webhooks WHERE id = $1`, id,
+	).Scan(&w.ID, &w.URL, &w.SecretHash, &w.SecretCiphertext, &w.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Webhook{}, false, nil
+	}
+	if err != nil {
+		return Webhook{}, false, fmt.Errorf("get webhook: %w", err)
+	}
+	return w, true, nil
+}
+
 func (s *Store) DeleteWebhook(ctx context.Context, id int64) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM webhooks WHERE id = $1`, id)
 	if err != nil {
 		return false, fmt.Errorf("delete webhook: %w", err)
+	}
+	return tag.RowsAffected() != 0, nil
+}
+
+func (s *Store) CreateWebhookDLQ(ctx context.Context, webhookID int64, payload []byte, lastError string, attempts int) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO webhook_dlq (webhook_id, payload, last_error, attempts)
+		VALUES ($1, $2, $3, $4)`, webhookID, payload, lastError, attempts)
+	if err != nil {
+		return fmt.Errorf("create webhook DLQ entry: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ListWebhookDLQ(ctx context.Context, webhookID int64, limit int) ([]WebhookDLQ, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, webhook_id, payload, last_error, attempts, failed_at
+		FROM webhook_dlq WHERE webhook_id = $1
+		ORDER BY id DESC LIMIT $2`, webhookID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list webhook DLQ: %w", err)
+	}
+	defer rows.Close()
+	var out []WebhookDLQ
+	for rows.Next() {
+		var item WebhookDLQ
+		if err := rows.Scan(&item.ID, &item.WebhookID, &item.Payload, &item.LastError, &item.Attempts, &item.FailedAt); err != nil {
+			return nil, fmt.Errorf("scan webhook DLQ entry: %w", err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list webhook DLQ rows: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) GetWebhookDLQ(ctx context.Context, webhookID, id int64) (WebhookDLQ, bool, error) {
+	var item WebhookDLQ
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, webhook_id, payload, last_error, attempts, failed_at
+		FROM webhook_dlq WHERE webhook_id = $1 AND id = $2`, webhookID, id,
+	).Scan(&item.ID, &item.WebhookID, &item.Payload, &item.LastError, &item.Attempts, &item.FailedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WebhookDLQ{}, false, nil
+	}
+	if err != nil {
+		return WebhookDLQ{}, false, fmt.Errorf("get webhook DLQ entry: %w", err)
+	}
+	return item, true, nil
+}
+
+func (s *Store) UpdateWebhookDLQFailure(ctx context.Context, webhookID, id int64, lastError string, attempts int) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE webhook_dlq
+		SET last_error = $3, attempts = attempts + $4, failed_at = now()
+		WHERE webhook_id = $1 AND id = $2`, webhookID, id, lastError, attempts)
+	if err != nil {
+		return false, fmt.Errorf("update webhook DLQ entry: %w", err)
+	}
+	return tag.RowsAffected() != 0, nil
+}
+
+func (s *Store) DeleteWebhookDLQ(ctx context.Context, webhookID, id int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM webhook_dlq WHERE webhook_id = $1 AND id = $2`, webhookID, id)
+	if err != nil {
+		return false, fmt.Errorf("delete webhook DLQ entry: %w", err)
 	}
 	return tag.RowsAffected() != 0, nil
 }

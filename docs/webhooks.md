@@ -72,3 +72,27 @@ An initial successful fetch establishes a baseline and does not produce a
 change event. A later successful fetch with a different hash is stored as a
 new issuer snapshot, logged as `issuer stellar.toml changed`, and delivered to
 each registered destination.
+
+## Failed deliveries
+
+The indexer makes the initial delivery attempt, then retries up to three times
+after 1, 2 and 4 seconds. A delivery that still fails is saved in the
+`webhook_dlq` table with its original payload, last error, attempt count and
+failure time. Inspect failures for a destination with the administrator token:
+
+```bash
+curl https://indexer.example/v1/webhooks/12/dlq \
+  -H "Authorization: Bearer $WEBHOOK_ADMIN_TOKEN"
+```
+
+Retry a delivery using its `id` from that response:
+
+```bash
+curl -X POST https://indexer.example/v1/webhooks/12/dlq/34/retry \
+  -H "Authorization: Bearer $WEBHOOK_ADMIN_TOKEN"
+```
+
+Manual retry uses the same retry policy. On success the DLQ row is removed; on
+failure it remains available with the latest error and an updated attempt
+count. The list endpoint accepts an optional `limit` query parameter (1-1000,
+default 100).

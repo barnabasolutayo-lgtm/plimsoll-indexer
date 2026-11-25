@@ -164,6 +164,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 		Handler: (&api.Server{
 			Store:             db,
 			WebhookStore:      db,
+			WebhookRetryer:    webhookDispatcher,
 			WebhookAdminToken: cfg.WebhookAdminToken,
 			WebhookCodec:      webhookCodec,
 			Network: api.NetworkInfo{
